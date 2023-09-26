@@ -31,7 +31,7 @@ impl std::fmt::Display for ParsingError {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 enum Operator {
     Add,
     Subtract,
@@ -51,6 +51,33 @@ impl std::fmt::Display for Operator {
             Self::Pow => write!(f, "^"),
             Self::Inverse => write!(f, "-"),
         }
+    }
+}
+
+impl std::str::FromStr for Operator {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "+" => Ok(Self::Add),
+            "-" => Ok(Self::Subtract),
+            "*" => Ok(Self::Multiply),
+            "/" => Ok(Self::Divide),
+            "^" => Ok(Self::Pow),
+            _ => Err(format!("Invalid operator: {}", s)),
+        }
+    }
+}
+
+impl PartialOrd for Operator {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.priority().cmp(&other.priority()))
+    }
+}
+
+impl Ord for Operator {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.priority().cmp(&other.priority())
     }
 }
 
@@ -84,15 +111,26 @@ impl Operator {
         }
         Ok(())
     }
+
+    fn priority(&self) -> i32 {
+        // Return the priority of this operator
+        match self {
+            Self::Add | Self::Subtract => 1,
+            Self::Multiply | Self::Divide => 2,
+            Self::Pow => 3,
+            Self::Inverse => 4,
+        }
+    }
+
 }
 
-enum Token {
+enum ParsingToken {
     Number(f64),
     Operator(Operator),
-    Parenthesis(Vec<Token>),
+    Parenthesis(Vec<ParsingToken>),
 }
 
-impl Token {
+impl ParsingToken {
     fn build_number(int_part: &str, float_part: &str) -> Result<f64, String> {
         let mut number = String::new();
         number.push_str(int_part);
@@ -118,7 +156,7 @@ impl Token {
 
         let compute_number = |int_part: &mut String,
                               float_part: &mut String,
-                              tokens: &mut Vec<Token>,
+                              tokens: &mut Vec<ParsingToken>,
                               is_float: &mut bool,
                               index: usize|
          -> Result<(), ParsingError> {
@@ -308,7 +346,7 @@ impl Token {
         }
 
         if !current_number.is_empty() {
-            tokens.push(Self::Number(match current_number.parse() {
+            tokens.push(Self::Number(match Self::build_number(&current_number, &current_float) {
                 Ok(n) => n,
                 Err(_) => {
                     return Err(ParsingError::new(
@@ -324,27 +362,118 @@ impl Token {
     }
 }
 
-struct Calculation {
-    tokens: Vec<Token>,
+struct Function {
+    signature: String,
+    arguments_count: i32,
+    function: fn(Vec<f64>) -> f64,
 }
 
-impl Calculation {
-    fn new(tokens: Vec<Token>) -> Self {
-        // We parse tokens and we build
-        // the token list, we need to
-        // flatten the token list, and
-        // have it with the form
-        // [Token::Number ..] Token::Operator
-        // The it will be easy to compute :)
-        Calculation { tokens: Vec::new() }
+impl Function {
+    fn new(signature: String, arguments_count: i32, function: fn(Vec<f64>) -> f64) -> Self {
+        Self {
+            signature,
+            arguments_count,
+            function,
+        }
+    }
+
+    fn call(&self, arguments: Vec<f64>) -> f64 {
+        (self.function)(arguments)
+    }
+
+    fn add() -> Self {
+        Self::new(
+            "add".to_string(),
+            2,
+            |arguments: Vec<f64>| arguments[0] + arguments[1],
+        )
+    }
+
+    fn subtract() -> Self {
+        Self::new(
+            "sub".to_string(),
+            2,
+            |arguments: Vec<f64>| arguments[0] - arguments[1],
+        )
+    }
+
+    fn multiply() -> Self {
+        Self::new(
+            "mul".to_string(),
+            2,
+            |arguments: Vec<f64>| arguments[0] * arguments[1],
+        )
+    }
+
+    fn divide() -> Self {
+        Self::new(
+            "div".to_string(),
+            2,
+            |arguments: Vec<f64>| arguments[0] / arguments[1],
+        )
+    }
+
+    fn inverse() -> Self {
+        Self::new(
+            "inv".to_string(),
+            1,
+            |arguments: Vec<f64>| -arguments[0]
+        )
+    }
+
+    fn pow() -> Self {
+        todo!("pow is not implemented yet");
+    }
+
+
+}
+
+enum Token {
+    Operator(Function, Vec<Token>),
+    Number(f64)
+}
+
+impl Token {
+
+    fn new(input: Vec<ParsingToken>) -> Result<Self, ParsingError> {
+        // We ord the operators by priority,
+        // we store index of the operators
+        // ordered by priority. If we have
+        // the same priority, we store the
+        // order by index (left to right)
+        let mut operators = Vec::new();
+        for token in &input {
+            match token {
+                ParsingToken::Operator(o) => {
+                    let mut index = 0;
+                    for (i, op) in operators.iter().enumerate() {
+                        if op < o {
+                            index = i + 1;
+                        }
+                    }
+                    operators.insert(index, o);
+                }
+                _ => (),
+            }
+        }
+        // Now we have the operators ordered by priority
+        // we can build the tokens tree easily
+
+    }
+
+    fn compute(&self) -> f64 {
+        match self {
+            Self::Number(n) => *n,
+            Self::Operator(f, arguments) => f.call(arguments.iter().map(|t| t.compute()).collect())
+        }
     }
 }
 
-impl std::fmt::Display for Token {
+impl std::fmt::Display for ParsingToken {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Self::Number(n) => write!(f, "{}", n),
-            Self::Operator(o) => write!(f, " {:#?} ", o),
+            Self::Operator(o) => write!(f, " {} ", o),
             Self::Parenthesis(p) => write!(
                 f,
                 "({})",
@@ -357,7 +486,7 @@ impl std::fmt::Display for Token {
     }
 }
 
-fn display(tokens: &Vec<Token>) -> Result<i32, &str> {
+fn display(tokens: &Vec<ParsingToken>) -> Result<i32, &str> {
     println!(
         "{}",
         tokens
@@ -371,14 +500,20 @@ fn display(tokens: &Vec<Token>) -> Result<i32, &str> {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    // Merge all input from 1 to ..
-    let input = args[1..].join(" ");
-    let tokens = match Token::tokenize(&input) {
-        Ok(t) => t,
-        Err(e) => {
-            println!("{}", e);
-            return;
-        }
-    };
-    display(&tokens).unwrap();
+    if (args.len() > 1) {
+        // Merge all input from 1 to ..
+        let input = args[1..].join(" ");
+        let tokens = match ParsingToken::tokenize(&input) {
+            Ok(t) => t,
+            Err(e) => {
+                println!("{}", e);
+                return;
+            }
+        };
+        display(&tokens).unwrap();
+    } else {
+        // Token test
+        let token = Token::new(ParsingToken::tokenize("1 + 2 * 3").unwrap());
+        println!("{}", token.compute());
+    }
 }
