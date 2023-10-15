@@ -1,14 +1,18 @@
-use std::env;
+use std::{env, vec};
 
 struct ParsingError {
     error: String,
-    base: String,
-    index: usize,
+    base: Option<String>,
+    index: Option<usize>,
 }
 
 impl ParsingError {
-    fn new(error: String, base: String, index: usize) -> Self {
-        Self { error, base, index }
+    fn indexed(error: String, base: String, index: usize) -> Self {
+        Self { error, base: Some(base), index: Some(index) }
+    }
+
+    fn not_indexed(error: String) -> Self {
+        Self { error, base: None, index: None }
     }
 }
 
@@ -25,8 +29,13 @@ impl std::fmt::Debug for ParsingError {
 impl std::fmt::Display for ParsingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "Error: {}", self.error)?;
-        writeln!(f, "{}", self.base)?;
-        writeln!(f, "{}^", " ".repeat(self.index))?;
+        match self.index {
+            Some(i) => {
+                writeln!(f, "{}", self.base.as_ref().unwrap())?;
+                writeln!(f, "{}^", " ".repeat(i))?;
+            }
+            None => (),
+        }
         Ok(())
     }
 }
@@ -90,28 +99,6 @@ impl Operator {
         }
     }
 
-    fn check_arguments(&self, arguments: &Vec<i32>) -> Result<(), &str> {
-        // Check if the arguments are valid for this operator
-        match self {
-            Self::Add | Self::Subtract | Self::Multiply | Self::Divide => {
-                if arguments.len() != 2 {
-                    return Err("Invalid number of arguments");
-                }
-            }
-            Self::Inverse => {
-                if arguments.len() != 1 {
-                    return Err("Invalid number of arguments");
-                }
-            }
-            Self::Pow => {
-                if arguments.len() != 2 {
-                    return Err("Invalid number of arguments");
-                }
-            }
-        }
-        Ok(())
-    }
-
     fn priority(&self) -> i32 {
         // Return the priority of this operator
         match self {
@@ -171,7 +158,7 @@ impl ParsingToken {
             }
 
             let number = Self::build_number(int_part, float_part)
-                .map_err(|e| ParsingError::new(e, input.to_string(), index))?;
+                .map_err(|e| ParsingError::indexed(e, input.to_string(), index))?;
 
             tokens.push(Self::Number(number));
             *int_part = String::new();
@@ -205,7 +192,7 @@ impl ParsingToken {
                         continue;
                     }
                     if is_float {
-                        return Err(ParsingError::new(
+                        return Err(ParsingError::indexed(
                             "Invalid number".to_string(),
                             input.to_string(),
                             i,
@@ -314,7 +301,7 @@ impl ParsingToken {
                     if parenthesis_depth == 0 {
                         // if parenthesis is empty, we return an error
                         if parenthesis_start + 1 == i {
-                            return Err(ParsingError::new(
+                            return Err(ParsingError::indexed(
                                 "Empty parenthesis".to_string(),
                                 input.to_string(),
                                 i - 1,
@@ -328,7 +315,7 @@ impl ParsingToken {
                 }
                 ' ' => (), // Ignore spaces
                 _ => {
-                    return Err(ParsingError::new(
+                    return Err(ParsingError::indexed(
                         "Invalid character".to_string(),
                         input.to_string(),
                         i,
@@ -338,7 +325,7 @@ impl ParsingToken {
         }
 
         if parenthesis_depth != 0 {
-            return Err(ParsingError::new(
+            return Err(ParsingError::indexed(
                 "Parenthesis not closed".to_string(),
                 input.to_string(),
                 input.len() - 1,
@@ -349,7 +336,7 @@ impl ParsingToken {
             tokens.push(Self::Number(match Self::build_number(&current_number, &current_float) {
                 Ok(n) => n,
                 Err(_) => {
-                    return Err(ParsingError::new(
+                    return Err(ParsingError::indexed(
                         "Invalid number".to_string(),
                         input.to_string(),
                         input.len(),
@@ -362,6 +349,35 @@ impl ParsingToken {
     }
 }
 
+impl std::fmt::Display for ParsingToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::Number(n) => write!(f, "{}", n),
+            Self::Operator(o) => write!(f, " {} ", o),
+            Self::Parenthesis(p) => write!(
+                f,
+                "({})",
+                p.iter()
+                    .map(|t| t.to_string())
+                    .collect::<Vec<String>>()
+                    .join("")
+            ),
+        }
+    }
+}
+
+fn display(tokens: &Vec<ParsingToken>) -> Result<i32, &str> {
+    println!(
+        "{}",
+        tokens
+            .iter()
+            .map(|t| t.to_string())
+            .collect::<Vec<String>>()
+            .join("")
+    );
+    Ok(0)
+}
+
 struct Function {
     signature: String,
     arguments_count: i32,
@@ -369,6 +385,18 @@ struct Function {
 }
 
 impl Function {
+
+    fn from_operator(operator: &Operator) -> Self {
+        match operator {
+            Operator::Add => Self::add(),
+            Operator::Subtract => Self::subtract(),
+            Operator::Multiply => Self::multiply(),
+            Operator::Divide => Self::divide(),
+            Operator::Pow => Self::pow(),
+            Operator::Inverse => Self::inverse(),
+        }
+    }
+
     fn new(signature: String, arguments_count: i32, function: fn(Vec<f64>) -> f64) -> Self {
         Self {
             signature,
@@ -377,8 +405,16 @@ impl Function {
         }
     }
 
-    fn call(&self, arguments: Vec<f64>) -> f64 {
-        (self.function)(arguments)
+    fn call(&self, arguments: Vec<f64>) -> Result<f64, String> {
+        if arguments.len() != self.arguments_count as usize {
+            return Err(format!(
+                "Invalid number of arguments for function {}, expected {}, found {}",
+                self.signature,
+                self.arguments_count,
+                arguments.len()
+            ));
+        }
+        Ok((self.function)(arguments))
     }
 
     fn add() -> Self {
@@ -422,10 +458,12 @@ impl Function {
     }
 
     fn pow() -> Self {
-        todo!("pow is not implemented yet");
+        Self::new(
+            "pow".to_string(),
+            2,
+            |arguments: Vec<f64>| arguments[0].powf(arguments[1]),
+        )
     }
-
-
 }
 
 enum Token {
@@ -435,85 +473,138 @@ enum Token {
 
 impl Token {
 
-    fn new(input: Vec<ParsingToken>) -> Result<Self, ParsingError> {
-        // We ord the operators by priority,
-        // we store index of the operators
-        // ordered by priority. If we have
-        // the same priority, we store the
-        // order by index (left to right)
-        let mut operators = Vec::new();
-        for token in &input {
-            match token {
+    fn new(input: &[ParsingToken]) -> Result<Self, ParsingError> {
+        // If len == 1, we have a number
+        if input.len() == 1 {
+            return match input[0] {
+                ParsingToken::Number(n) => Ok(Self::Number(n)),
+                ParsingToken::Parenthesis(ref p) => Self::new(p),
+                _ => Err(ParsingError::not_indexed(
+                    format!("Invalid token: {}, expected number", input[0])
+                )),
+            }
+        }
+
+        let mut lowest_priority: Option<i32> = None;
+        let mut lowest_priority_index: Option<usize> = None;
+        for (i, t) in input.iter().enumerate() {
+            match t {
                 ParsingToken::Operator(o) => {
-                    let mut index = 0;
-                    for (i, op) in operators.iter().enumerate() {
-                        if op < o {
-                            index = i + 1;
-                        }
+                    if lowest_priority.is_none() {
+                        lowest_priority = Some(o.priority());
+                        lowest_priority_index = Some(i);
+                    } else if o.priority() < lowest_priority.unwrap() {
+                        // Not >= because we want to keep the leftmost operator
+                        lowest_priority = Some(o.priority());
+                        lowest_priority_index = Some(i);
                     }
-                    operators.insert(index, o);
                 }
                 _ => (),
             }
         }
-        // Now we have the operators ordered by priority
-        // we can build the tokens tree easily
 
+        // If still None, we have many numbers
+        // It can't be a valid input
+        if lowest_priority.is_none() {
+            return Err(ParsingError::not_indexed(
+                format!("There are many numbers in the input, expected operator")
+            ));
+        }
+
+        match &input[lowest_priority_index.unwrap()] {
+            ParsingToken::Operator(o) => {
+                match o.count() {
+                    1 => {
+                        // Unary operator
+                        let right = Self::new(&input[lowest_priority_index.unwrap() + 1..])?;
+                        Ok(
+                            Self::Operator(
+                                Function::from_operator(o),
+                                vec![right]
+                            )
+                        )
+                    }
+                    2 => {
+                        // Binary operator
+                        let left = Self::new(&input[..lowest_priority_index.unwrap()])?;
+                        let right = Self::new(&input[lowest_priority_index.unwrap() + 1..])?;
+                        Ok(
+                            Self::Operator(
+                                Function::from_operator(o),
+                                vec![left, right]
+                            )
+                        )
+                    }
+                    _ => Err(ParsingError::not_indexed(
+                        format!("Operator with more than 2 arguments are not supported, found {}", o.count())
+                    )),
+                }
+            }
+            _ => Err(ParsingError::not_indexed(
+                format!("Invalid token: {}, expected operator", input[lowest_priority_index.unwrap()])
+            )),
+        }
     }
 
-    fn compute(&self) -> f64 {
+    fn compute(&self) -> Result<f64, String> {
         match self {
-            Self::Number(n) => *n,
-            Self::Operator(f, arguments) => f.call(arguments.iter().map(|t| t.compute()).collect())
+            Self::Number(n) => Ok(*n),
+            Self::Operator(f, arguments) => match f.call(arguments.iter().map(|t| t.compute()?).collect()) {
+                Ok(n) => Ok(n),
+                Err(e) => Err(e),
+            }
         }
     }
 }
 
-impl std::fmt::Display for ParsingToken {
+impl std::fmt::Display for Token {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Self::Number(n) => write!(f, "{}", n),
-            Self::Operator(o) => write!(f, " {} ", o),
-            Self::Parenthesis(p) => write!(
-                f,
-                "({})",
-                p.iter()
-                    .map(|t| t.to_string())
-                    .collect::<Vec<String>>()
-                    .join("")
-            ),
+            Self::Operator(o, arguments) => {
+                write!(f, "{}", o.signature)?;
+                write!(f, "(")?;
+                for (i, a) in arguments.iter().enumerate() {
+                    write!(f, "{}", a)?;
+                    if i < arguments.len() - 1 {
+                        write!(f, ", ")?;
+                    }
+                }
+                write!(f, ")")
+            }
         }
     }
 }
 
-fn display(tokens: &Vec<ParsingToken>) -> Result<i32, &str> {
-    println!(
-        "{}",
-        tokens
-            .iter()
-            .map(|t| t.to_string())
-            .collect::<Vec<String>>()
-            .join("")
-    );
-    Ok(0)
-}
+
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    if (args.len() > 1) {
-        // Merge all input from 1 to ..
-        let input = args[1..].join(" ");
-        let tokens = match ParsingToken::tokenize(&input) {
-            Ok(t) => t,
-            Err(e) => {
-                println!("{}", e);
-                return;
+    match ParsingToken::tokenize(
+        if args.len() > 1 {
+            // Merge all input from 1 to ..
+            args[1..].join(" ")
+        } else {
+            // Token test
+            "1 + 2 * 3 / 2 - 4".to_string()
+        }.as_str()
+    ) {
+        Ok(tokens) => {
+            display(&tokens).unwrap();
+            match Token::new(&tokens) {
+                Ok(t) => {
+                    match t.compute() {
+                        Ok(n) => println!("{} = {}", t, n),
+                        Err(e) => println!("{}", e),
+                    }
+                },
+                Err(e) => {
+                    println!("{}", e);
+                }
             }
-        };
-        display(&tokens).unwrap();
-    } else {
-        // Token test
-        let token = Token::new(ParsingToken::tokenize("1 + 2 * 3").unwrap());
-        println!("{}", token.compute());
+        }
+        Err(e) => {
+            println!("{}", e);
+        }
     }
 }
